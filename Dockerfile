@@ -11,9 +11,9 @@ FROM python:3.11-slim-bookworm
 COPY --from=builder-image /usr/local/bin /usr/local/bin
 COPY --from=builder-image /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
-WORKDIR /opt/code
+WORKDIR /vdb_bench
 #COPY . .
-ENV PYTHONPATH /opt/code
+ENV PYTHONPATH /vdb_bench
 
 # ENTRYPOINT ["python3", "-m", "vectordb_bench"]
 ENTRYPOINT ["/usr/bin/bash"]
