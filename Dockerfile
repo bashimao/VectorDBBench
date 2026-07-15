@@ -9,16 +9,11 @@ FROM python:3.11-slim-bookworm
 COPY --from=builder-image /usr/local/bin /usr/local/bin
 COPY --from=builder-image /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
-RUN export DEBIAN_FRONTEND=noninteractive && \
-  apt-get update && \
-  apt-get upgrade -y && \
-  apt-get install --no-install-recommends -y \
-    curl \
-    nano \
-    numactl \
-    tar \
-    wget \
-    zstd
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
+  procps \
+  xz-utils && \
+  rm -rf /var/lib/apt/lists/*
+
 
 WORKDIR /vdb_bench
 #COPY . .
