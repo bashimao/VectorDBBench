@@ -6,13 +6,12 @@ from enum import Enum, StrEnum
 from typing import Any, ClassVar, Self
 
 import ujson
-from pydantic import PositiveInt, model_validator
+from pydantic import PositiveInt, field_validator, model_validator
 
-from vectordb_bench.backend.cases import type2case
 from vectordb_bench.backend.dataset import DatasetWithSizeMap
 
 from . import config
-from .backend.cases import Case, CaseType
+from .backend.cases import Case, CaseType, PerformanceCase, type2case
 from .backend.clients import (
     DB,
     DBCaseConfig,
@@ -20,6 +19,7 @@ from .backend.clients import (
     EmptyDBCaseConfig,
 )
 from .backend.clients.api import IndexType
+from .backend.payload import PayloadProfile
 from .base import BaseModel
 from .metric import Metric
 
@@ -213,8 +213,33 @@ class CaseConfig(BaseModel):
 
     case_id: CaseType
     custom_case: dict | None = None
+    payload_profile: PayloadProfile | None = None
     k: int | None = config.K_DEFAULT
     concurrency_search_config: ConcurrencySearchConfig = ConcurrencySearchConfig()
+
+    @field_validator("k")
+    @classmethod
+    def validate_k(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            msg = f"K must be positive, got {value}"
+            raise ValueError(msg)
+        return value
+
+    @model_validator(mode="after")
+    def validate_payload_profile(self) -> Self:
+        if self.payload_profile is None:
+            return self
+
+        case_cls = type2case[self.case_id]
+        if not issubclass(case_cls, PerformanceCase):
+            msg = "Top-level payload_profile is only supported for PerformanceCase cases"
+            raise ValueError(msg)  # noqa: TRY004
+
+        legacy_profile = (self.custom_case or {}).get("payload_profile")
+        if legacy_profile is not None and PayloadProfile(legacy_profile) != self.payload_profile:
+            msg = "Top-level payload_profile conflicts with custom_case payload_profile"
+            raise ValueError(msg)
+        return self
 
     '''
     @property
@@ -233,7 +258,10 @@ class CaseConfig(BaseModel):
 
     @property
     def case(self) -> Case:
-        return self.case_id.case_cls(self.custom_case)
+        custom_case = dict(self.custom_case or {})
+        if self.payload_profile is not None:
+            custom_case["payload_profile"] = self.payload_profile
+        return self.case_id.case_cls(custom_case or None)
 
     @property
     def case_name(self) -> str:
@@ -340,7 +368,7 @@ class TestResult(BaseModel):
             return {
                 key: (
                     "**********"
-                    if key.lower() in cls.sensitive_output_fields and item
+                    if isinstance(key, str) and key.lower() in cls.sensitive_output_fields and item
                     else cls._redact_sensitive_fields(item)
                 )
                 for key, item in value.items()
@@ -451,7 +479,7 @@ class TestResult(BaseModel):
         return case_config
 
     @classmethod
-    def read_file(cls, full_path: pathlib.Path, trans_unit: bool = False) -> Self:
+    def read_file(cls, full_path: pathlib.Path, trans_unit: bool = False) -> Self:  # noqa: PLR0912
         if not full_path.exists():
             msg = f"No such file: {full_path}"
             raise ValueError(msg)
@@ -519,6 +547,12 @@ class TestResult(BaseModel):
                         )
                     elif "serial_latency_p99" in metrics:
                         metrics["serial_latency_p95"] = 0.0
+
+                    if "serial_latency_p50" in metrics:
+                        cur_latency_p50 = metrics["serial_latency_p50"]
+                        metrics["serial_latency_p50"] = (
+                            cur_latency_p50 * 1000 if cur_latency_p50 > 0 else cur_latency_p50
+                        )
             return TestResult.model_validate(test_result)
 
     def display(self, dbs: list[DB] | None = None):
