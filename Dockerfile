@@ -2,7 +2,7 @@ FROM python:3.11-bookworm as builder-image
 
 COPY install/requirements_py3.11.txt .
 RUN pip3 install -U pip
-RUN pip3 install --no-cache-dir -r requirements_py3.11.txt 
+RUN pip3 install --no-cache-dir -r requirements_py3.11.txt
 
 FROM python:3.11-slim-bookworm
 
