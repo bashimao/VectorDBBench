@@ -100,6 +100,14 @@ Commands:
 ```
 To list the options for each command, execute `vectordbbench [command] --help`
 
+Use `--note` or `--note-file` to preserve deployment, resource, client, network, and constraint context in each result JSON under `task_config.db_config.note`. The options are mutually exclusive. Prefer `--note-file` for structured or multiline context, and never include credentials, tokens, or sensitive connection details.
+
+```shell
+vectordbbench zillizautoindex \
+  --note-file ./run-context.json \
+  <other options>
+```
+
 ```text
 $ vectordbbench pgvectorhnsw --help
 Usage: vectordbbench pgvectorhnsw [OPTIONS]
@@ -118,6 +126,9 @@ Options:
                                   Case type
   --db-label TEXT                 Db label, default: date in ISO format
                                   [default: 2024-05-20T20:26:31.113290]
+  --note TEXT                     Run context stored with each result
+                                  [default: ""]
+  --note-file FILE                Read run context from a UTF-8 text file
   --dry-run                       Print just the configuration and exit
                                   without running the tasks
   --k INTEGER                     K value for number of nearest neighbors to
@@ -276,7 +287,7 @@ OpenSearch Serverless (AOSS) is a serverless deployment option for Amazon OpenSe
 **Example: Run performance test on OpenSearch Serverless**
 
 ```shell
-vectordbbench awsopensearch --db-label aoss \
+vectordbbench awsopensearch --db-label aoss --insert-batch-size 100 \
   --serverless --aws-region us-east-1 \
   --host <collection-id>.aoss.us-east-1.on.aws --port 443 \
   --case-type Performance768D1M \
@@ -292,12 +303,13 @@ OpenSearch Serverless-specific options:
 |--------|-------------|
 | `--serverless` | Enable OpenSearch Serverless mode (uses AWS SigV4 auth) |
 | `--aws-region` | AWS region for the AOSS collection (default: `us-east-1`) |
+| `--insert-batch-size` | Number of vectors per Serverless bulk request (default: `100`) |
 
 > **Notes:**
 > - `--user` and `--password` are not needed for Serverless mode
 > - `--engine` is accepted but ignored internally (AOSS manages the engine)
 > - `--force-merge-enabled`, `--refresh-interval`, `--flush-threshold-size`, and `--cb-threshold` are ignored for Serverless
-> - Data insertion uses smaller batch sizes (100) for Serverless API compatibility
+> - Keep `--insert-batch-size` small enough for the Serverless bulk API request limits
 
 ### Run Elastic Cloud from command line
 
@@ -466,7 +478,7 @@ pip install 'vectordb-bench[hologres]' 'psycopg[binary]' pgvector
 Execute tests for the index types: HGraph.
 
 ```shell
-NUM_PER_BATCH=10000 vectordbbench hologreshgraph --host Hologres_Endpoint --port 80 \
+vectordbbench hologreshgraph --host Hologres_Endpoint --port 80 --insert-batch-size 10000 \
 --user ACCESS_ID --password ACCESS_KEY --database DATABASE_NAME \
 --m 64 --ef-construction 400 --case-type Performance768D10M \
 --index-type HGraph --ef-search 400 --k 10 --num-concurrency 1,60,70,75,80,90,95,100,105,110,115,120,125,130 \
@@ -520,12 +532,12 @@ To list the options for zvec, execute vectordbbench zvec --help
 Doris supports ann index with type hnsw from version 4.0.x
 
 ```shell
-NUM_PER_BATCH=1000000 vectordbbench doris --http-port=8030 --port=9030 --db-name=vector_test --case-type=Performance768D1M --stream-load-rows-per-batch=500000
+vectordbbench doris --http-port=8030 --port=9030 --db-name=vector_test --case-type=Performance768D1M --insert-batch-size=1000000 --stream-load-rows-per-batch=500000
 ```
 
 Using flag `--session-var`, if you want to test doris with some customized session variables. For example:
 ```shell
-NUM_PER_BATCH=1000000 vectordbbench doris --http-port=8030 --port=9030 --db-name=vector_test --case-type=Performance768D1M --stream-load-rows-per-batch=500000 --session-var enable_profile=True
+vectordbbench doris --http-port=8030 --port=9030 --db-name=vector_test --case-type=Performance768D1M --insert-batch-size=1000000 --stream-load-rows-per-batch=500000 --session-var enable_profile=True
 ```
 
 Mote options:
@@ -546,8 +558,8 @@ Mote options:
 --session-var TEXT              Session variable key=value applied to each
                                 SQL session (repeatable)
 --stream-load-rows-per-batch INTEGER
-                                Rows per single stream load request; default
-                                uses NUM_PER_BATCH
+                                Rows per Doris stream-load request; when
+                                omitted, the Doris client default is used
 --no-index                      Create table without ANN index
 ```
 
@@ -931,13 +943,54 @@ We've developed lots of comprehensive benchmark cases to test vector databases' 
 - **Large Dataset:** Similar to the XLarge Dataset case, but uses a slightly smaller dataset (10M-1024dim, 10M-768dim, 5M-1536dim).
 - **Medium Dataset:** A case using a medium dataset (1M-1024dim, 1M-768dim, 500K-1536dim).
 - **Small Dataset:** For development (100K-768dim, 50K-1536dim).
+
+##### LAION-100M Large-TopK
+
+`Performance768D100M` selects its query and ground-truth files from `--k`:
+
+| Requested K | Query file | Ground-truth file | Queries | GT width |
+|---:|---|---|---:|---:|
+| `1..1,000` | `test.parquet` | `neighbors.parquet` | 1,000 | 1,000 |
+| `1,001..100,000` | `test_nq200.parquet` | `neighbors_top100k_nq200.parquet` | 200 | 100,000 |
+| `100,001..1,000,000` | `test_nq200.parquet` | `neighbors_top1m_nq200.parquet` | 200 | 1,000,000 |
+
+K must be positive, and LAION-100M rejects values above 1,000,000. Integer-filter runs use the smallest published GT width that covers K:
+
+| Integer filter rate | Published GT widths | Maximum K |
+|---:|---:|---:|
+| 50%, 60%, 70%, 80%, 90%, 95%, 98%, 99% | 100K, 1M | 1M |
+| 99.5% | 100K, 500K | 500K |
+| 99.8% | 100K, 200K | 200K |
+| 99.9% | 100K | 100K |
+
+K up to 1,000 keeps the original 1,000-query filtered artifacts; larger K uses `test_nq200.parquet`. Other integer filter rates and label-filter runs above K=1,000 are rejected before database initialization. VDBBench validates query IDs, row counts, and GT width before issuing a search.
+
+```bash
+vectordbbench milvusautoindex --uri http://localhost:19530 --case-type NewIntFilterPerformanceCase --dataset-with-size-type "Large LAION (768dim, 100M)" --filter-rate 0.99 --k 1000000
+```
+
+Wide GT remains in Parquet/Arrow form and is opened inside the serial-search subprocess one query row at a time. Results include primary `recall@K`, `recall_at` for the available cutoffs among 100, 1K, 10K, 100K, and 1M, plus serial and concurrent p50/p95/p99 latency. Concurrent throughput continues to use the configured fixed-duration phase.
+
+For Milvus and Zilliz Cloud performance runs with K above 16,384, VDBBench automatically creates new collections with `query_mode=large_topk` before creating the vector index. Reused collections are validated and rejected when that property is missing or incompatible. The target database, selected mode, and requested K are written to the run log. Self-hosted Milvus must be 2.6.14 or later, the release that introduced the `query_mode=large_topk` collection property; earlier servers accept the property without honoring it. Other backends must already permit the requested K; VDBBench forwards K unchanged and does not alter their collection properties.
+
+##### Performance Response Payloads
+
+Every vector search performance case can be configured for either an IDs-only response or a response that also includes each result vector. IDs only remains the default. Run the scenarios separately from the CLI:
+
+```bash
+vectordbbench milvusautoindex --uri http://localhost:19530 --case-type Performance768D100M --k 1000000 --payload-profile ids_only
+vectordbbench milvusautoindex --uri http://localhost:19530 --case-type Performance768D100M --k 1000000 --payload-profile vector
+```
+
+The frontend can select one or both scenarios for Milvus and Zilliz Cloud. Each scenario produces independent P99 latency, QPS, and recall metrics. `qps` remains the highest observed QPS among the configured concurrency levels; VDBBench does not discover a backend concurrency limit.
+
 #### Filtering Search Performance Case
 - **Int-Filter Cases:** Evaluates search performance with int-based filter expression (e.g.  "id >= 2,000").
 - **Label-Filter Cases:** Evaluates search performance with label-based filter expressions (e.g., "color == 'red'"). The test includes randomly generated labels to simulate real-world filtering scenarios.
 #### Full Text Search Performance Case
 - **FullTextSearchPerformance:** Measures BM25-style text retrieval over raw text documents. The case inserts documents, runs the backend optimization or index-readiness step, then measures recall, latency, and QPS for text queries.
 - **Datasets:** The initial FTS benchmark uses MS MARCO and HotpotQA in small, medium, and large corpus sizes.
-- **Ground truth:** Recall is computed against generated mathematical BM25 ground truth, not semantic relevance labels.
+- **Ground truth:** Recall, MRR, and NDCG are computed against positive semantic relevance labels from `ir_datasets`.
 - **Payload profiles:** FTS supports IDs-only responses and text payload responses so users can compare pure retrieval throughput against response-size overhead.
 #### Streaming Cases
 - **Insertion-Under-Load Case:** Evaluates search performance while maintaining a constant insertion workload. VDBBench applies a steady stream of insert requests at a fixed rate to simulate real-world scenarios where search operations must perform reliably under continuous data ingestion.
